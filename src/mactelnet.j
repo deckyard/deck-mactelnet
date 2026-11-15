@@ -1,0 +1,707 @@
+# SPDX-License-Identifier: LGPL-3.0-only
+# SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
+# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-capability: net
+
+/**
+ * A MikroTik **MAC-Telnet** client - a Layer-2 console to a RouterOS device by
+ * MAC address, with no IP configured on either side (what Winbox's "Neighbors"
+ * console does). The transport is UDP broadcast on port 20561 with the source
+ * and destination MAC carried in the packet payload, so it reaches a router that
+ * has no address yet - the way to set the first IP on a fresh or just-reset
+ * device before switching to the IP-based RouterOS API (`@jennifer/mikrotik`).
+ *
+ * `connect` runs the full session-start + authentication handshake and returns a
+ * logged-in `Session`; `send` writes a console command, `recv` reads whatever
+ * output is available, and `close` ends the session. It drives the router's text
+ * CLI (send `/ip address add ...\r\n`, read the echo), not the binary API.
+ *
+ * Authentication auto-detects the router's generation from the salt it offers:
+ * legacy 16-byte-salt **MD5** (RouterOS < 6.43) or the modern 49-byte **EC-SRP**
+ * (Curve25519; RouterOS 6.43+ and all v7, including factory-fresh devices), via
+ * `crypto.mtwei*`. The local interface's MAC is read from `/sys/class/net`.
+ *
+ * A failed login or a malformed MAC address throws `Error{kind: "mactelnet"}`; a
+ * router that does not answer is the generic kind `"timeout"`, and a socket
+ * failure comes from `net` unchanged. Needs the default `jennifer` binary (`net`,
+ * and broadcast UDP is Linux-only).
+ *
+ * SECURITY: MAC-Telnet is an unauthenticated-transport, cleartext L2 protocol -
+ * the password proof is hashed but the session itself is not encrypted, and any
+ * host on the same segment can see the traffic. Use it only on a trusted wire to
+ * bootstrap a device, then move to api-ssl over IP.
+ * @module mactelnet
+ * @example
+ * import "@jennifer/mactelnet/" as mactelnet;
+ * def s as mactelnet.Session init mactelnet.connect("eth0", "e4:8d:8c:11:22:33", "admin", "");
+ * mactelnet.send($s, "/ip address add address=192.168.88.10/24 interface=ether1\r\n");
+ * def out as string init mactelnet.recv($s, 1500);
+ * mactelnet.close($s);
+ */
+use net;
+use crypto;
+use hash;
+use binary;
+use convert;
+use strings;
+use encoding;
+use fs;
+use kv;
+
+# --- protocol constants (private) -------------------------------------------
+
+def const MT_PORT as int init 20561;
+
+# Packet types (header byte 1).
+def const PTYPE_SESSIONSTART as int init 0;
+def const PTYPE_DATA as int init 1;
+def const PTYPE_ACK as int init 2;
+def const PTYPE_END as int init 255;
+
+# Control-packet types (inside a DATA payload).
+def const CPTYPE_BEGINAUTH as int init 0;
+def const CPTYPE_PASSSALT as int init 1;
+def const CPTYPE_PASSWORD as int init 2;
+def const CPTYPE_USERNAME as int init 3;
+def const CPTYPE_TERM_TYPE as int init 4;
+def const CPTYPE_TERM_WIDTH as int init 5;
+def const CPTYPE_TERM_HEIGHT as int init 6;
+def const CPTYPE_END_AUTH as int init 9;
+
+# The 22-byte MAC-Telnet header length, and the largest datagram we read.
+def const HEADER_LEN as int init 22;
+def const MAX_DATAGRAM as int init 1600;
+
+# Retransmit schedule (ms) for a reliable send: resend until an ACK arrives, then
+# give up. Bounded so an unreachable or wrong MAC fails instead of hanging.
+def const POLL_MS as int init 120;
+
+func retransmitMs() {
+    return [150, 250, 500, 900, 1500];
+}
+
+func fail(msg as string) {
+    throw Error{kind: "mactelnet", message: "mactelnet: " + $msg};
+}
+
+# --- structs ----------------------------------------------------------------
+
+/**
+ * An open MAC-Telnet console session. `sock` is the broadcast UDP socket;
+ * `state` is a per-session key/value store holding the mutable send/receive
+ * counters and the pending-output buffer (a plain struct field could not persist
+ * a mutation across a module call, so the counters live in shared `kv` state);
+ * `srcmac` / `dstmac` are the 6-byte local and router MACs; `seskey` is the
+ * random session id.
+ * @field sock {net.UDPSocket} the broadcast UDP socket
+ * @field state {kv.Store} per-session counters and output buffer
+ * @field srcmac {bytes} local interface MAC (6 bytes)
+ * @field dstmac {bytes} router MAC (6 bytes)
+ * @field seskey {int} the 16-bit session key
+ */
+export def struct Session {
+    sock as net.UDPSocket,
+    state as kv.Store,
+    srcmac as bytes,
+    dstmac as bytes,
+    seskey as int
+};
+
+# One decoded server DATA packet's salient contents (private): collected plain
+# terminal text, an auth salt if a PASSSALT control was present, and the auth /
+# end flags.
+def struct Frame {
+    plain as string,
+    salt as bytes,
+    endAuth as bool,
+    ended as bool
+};
+
+# A parsed packet header (private): the fields the client dispatches on.
+def struct Header {
+    ptype as int,
+    src as bytes,
+    seskey as int,
+    counter as int
+};
+
+# --- little byte helpers (private) ------------------------------------------
+
+func emptyBytes() {
+    def b as bytes;
+    return $b;
+}
+
+func utf8(s as string) {
+    return convert.bytesFromString("utf-8", $s);
+}
+
+func u16be(n as int) {
+    def b as bytes;
+    $b[] = ($n >> 8) & 0xff;
+    $b[] = $n & 0xff;
+    return $b;
+}
+
+func u16le(n as int) {
+    def b as bytes;
+    $b[] = $n & 0xff;
+    $b[] = ($n >> 8) & 0xff;
+    return $b;
+}
+
+func u32be(n as int) {
+    def b as bytes;
+    $b[] = ($n >> 24) & 0xff;
+    $b[] = ($n >> 16) & 0xff;
+    $b[] = ($n >> 8) & 0xff;
+    $b[] = $n & 0xff;
+    return $b;
+}
+
+func readU16be(buf as bytes, off as int) {
+    return binary.readUint("be", $buf, $off, 2);
+}
+
+func readU32be(buf as bytes, off as int) {
+    return binary.readUint("be", $buf, $off, 4);
+}
+
+# --- MAC address (private, plus exported convenience) -----------------------
+
+/**
+ * Parse a MAC address string ("aa:bb:cc:dd:ee:ff", "-" separators or none also
+ * accepted) into its 6 raw bytes.
+ * @param s {string} the MAC address text
+ * @return {bytes} the 6-byte address
+ */
+export func parseMac(s as string) {
+    def clean as string init strings.replace($s, ":", "");
+    $clean = strings.replace($clean, "-", "");
+    $clean = strings.lower(strings.trim($clean));
+    if (len($clean) != 12) {
+        fail("invalid MAC address: " + $s);
+    }
+    def b as bytes init encoding.fromText("hex", $clean);
+    if (len($b) != 6) {
+        fail("invalid MAC address: " + $s);
+    }
+    return $b;
+}
+
+/**
+ * Format 6 raw MAC bytes as a colon-separated lower-case string.
+ * @param b {bytes} the 6-byte address
+ * @return {string} "aa:bb:cc:dd:ee:ff"
+ */
+export func formatMac(b as bytes) {
+    def n as int init len($b);
+    if ($n != 6) {
+        fail("a MAC address is 6 bytes, got {$n}");
+    }
+    def parts as list of string init [];
+    for (def i in 0..6) {
+        def h as string init encoding.toText("hex", $b[$i..$i + 1]);
+        $parts[] = $h;
+    }
+    return strings.join($parts, ":");
+}
+
+# localMac reads an interface's hardware address from Linux sysfs.
+func localMac(iface as string) {
+    def p as string init "/sys/class/net/" + $iface + "/address";
+    if (not fs.exists($p)) {
+        fail("no such network interface: " + $iface + " (looked at " + $p + ")");
+    }
+    return parseMac(strings.trim(fs.readString($p)));
+}
+
+# --- packet build / parse (private) -----------------------------------------
+
+# buildHeader builds the 22-byte client header. Client layout: session key at
+# offset 14 (big-endian), client type {00 15} at 16, counter at 18 (big-endian).
+func buildHeader(ptype as int, src as bytes, dst as bytes, seskey as int, counter as int) {
+    def lead as bytes;
+    $lead[] = 1;
+    $lead[] = $ptype;
+    def ct as bytes;
+    $ct[] = 0x00;
+    $ct[] = 0x15;
+    return binary.join([$lead, $src, $dst, u16be($seskey), $ct, u32be($counter)]);
+}
+
+# parseHeader reads a server->client packet header. Server layout puts the
+# session key at offset 16 (the client/server swap of key and client-type).
+func parseHeader(pkt as bytes) {
+    return Header{
+        ptype: $pkt[1],
+        src: $pkt[2..8],
+        seskey: readU16be($pkt, 16),
+        counter: readU32be($pkt, 18)
+    };
+}
+
+# ours reports whether a received header belongs to this session: its session
+# key, sent from the router's MAC. The 16-bit key alone is guessable by any host
+# on the segment, which could then inject console output or end the session.
+func ours(s as Session, h as Header) {
+    return $h.seskey == $s.seskey and $h.src == $s.dstmac;
+}
+
+# controlBlock frames one control packet: magic 56 34 12 ff, type, 4-byte
+# big-endian length, then the data.
+func controlBlock(cptype as int, data as bytes) {
+    def b as bytes;
+    $b[] = 0x56;
+    $b[] = 0x34;
+    $b[] = 0x12;
+    $b[] = 0xff;
+    $b[] = $cptype;
+    return binary.join([$b, u32be(len($data)), $data]);
+}
+
+func matchMagic(buf as bytes, off as int) {
+    return $buf[$off] == 0x56 and $buf[$off + 1] == 0x34 and $buf[$off + 2] == 0x12 and
+        $buf[$off + 3] == 0xff;
+}
+
+# md5Password builds the legacy password control payload:
+# 0x00 followed by MD5(0x00 + password + salt). 17 bytes.
+func md5Password(password as string, salt as bytes) {
+    def zero as bytes;
+    $zero[] = 0;
+    def d as bytes init hash.compute("md5", binary.join([$zero, utf8($password), $salt]));
+    return binary.concat($zero, $d);
+}
+
+# loginKey is the PASSSALT payload the client sends first: username, a null
+# byte, then the 33-byte EC-SRP public key.
+func loginKey(user as string, pubkey as bytes) {
+    def z as bytes;
+    $z[] = 0;
+    return binary.join([utf8($user), $z, $pubkey]);
+}
+
+# --- session state accessors (private) --------------------------------------
+
+func getInt(state as kv.Store, key as string) {
+    return convert.toInt(kv.get($state, $key));
+}
+
+func setInt(state as kv.Store, key as string, n as int) {
+    kv.set($state, $key, "{$n}", 0);
+    return;
+}
+
+func appendBuf(state as kv.Store, plain as string) {
+    if (len($plain) > 0) {
+        kv.set($state, "buf", kv.get($state, "buf") + $plain, 0);
+    }
+    return;
+}
+
+func drainBuf(state as kv.Store) {
+    def b as string init kv.get($state, "buf");
+    kv.set($state, "buf", "", 0);
+    return $b;
+}
+
+# --- send / receive core (private) ------------------------------------------
+
+func sendRaw(s as Session, packet as bytes) {
+    net.sendTo($s.sock, kv.get($s.state, "target"), $packet);
+    return;
+}
+
+# bindDevice best-effort-binds the broadcast socket to `iface` (SO_BINDTODEVICE),
+# so egress and ingress use that link rather than whichever one the kernel
+# routing table picks for 255.255.255.255 - the difference between reaching the
+# right NIC and silently timing out on a multi-homed host. The bind needs
+# CAP_NET_RAW (root); when unprivileged it is skipped, leaving the historical
+# wildcard behavior (reliable on a single-NIC host, where there is only one link
+# to use). A multi-homed host therefore needs to run this with privilege.
+func bindDevice(sock as net.UDPSocket, iface as string) {
+    try {
+        net.bindToDevice($sock, $iface);
+    } catch (e) { # lint-disable: L103
+    }
+    return;
+}
+
+# recvPacket waits up to timeoutMs for a datagram. Returns the raw bytes, or an
+# empty bytes on timeout; any other failure (a closed socket, a cancelled task)
+# goes on. The read deadline is cleared on every exit path (0 clears it) so it
+# never leaks onto a later recv on this socket.
+func recvPacket(s as Session, timeoutMs as int) {
+    defer net.setReadDeadline($s.sock, 0);
+    net.setReadDeadline($s.sock, $timeoutMs);
+    # The socket is wildcard-bound and broadcast, so any LAN peer can deliver a
+    # datagram. A runt (shorter than a MACtelnet header) would make parseHeader
+    # index past the end and abort the whole session; drop it and keep waiting
+    # within the one read deadline for a real one (or a timeout). Returning an
+    # empty bytes only on timeout keeps the callers' `while len(pkt) > 0` drain
+    # loops intact (a dropped runt must not look like "nothing more to read").
+    while (true) {
+        try {
+            def dg as net.Datagram init net.recvFrom($s.sock, MAX_DATAGRAM);
+            if (len($dg.data) >= HEADER_LEN) {
+                return $dg.data;
+            }
+        } catch (e) {
+            if ($e.kind == "timeout") {
+                return emptyBytes();
+            }
+            throw $e;
+        }
+    }
+}
+
+# ackFor sends an ACK for a received DATA packet: counter = the received counter
+# plus the received payload length, no body.
+func ackFor(s as Session, pkt as bytes) {
+    def h as Header init parseHeader($pkt);
+    def payloadLen as int init len($pkt) - HEADER_LEN;
+    sendRaw($s, buildHeader(PTYPE_ACK, $s.srcmac, $s.dstmac, $s.seskey, $h.counter + $payloadLen));
+    return;
+}
+
+# processData acknowledges a server DATA packet, drops duplicates by the receive
+# counter, walks its control blocks, buffers any plain terminal text, and returns
+# a Frame describing what it found.
+func processData(s as Session, pkt as bytes) {
+    def h as Header init parseHeader($pkt);
+    ackFor($s, $pkt);
+
+    def inc as int init getInt($s.state, "in");
+    def isNew as bool init ($h.counter > $inc) or (($inc - $h.counter) > 65535);
+    if (not $isNew) {
+        return Frame{plain: "", salt: emptyBytes(), endAuth: false, ended: false};
+    }
+    setInt($s.state, "in", $h.counter);
+
+    def payload as bytes init $pkt[HEADER_LEN..];
+    def off as int init 0;
+    def plain as string init "";
+    def salt as bytes init emptyBytes();
+    def endAuth as bool init false;
+    while ($off < len($payload)) {
+        if ($off + 9 <= len($payload) and matchMagic($payload, $off)) {
+            def cptype as int init $payload[$off + 4];
+            def clen as int init readU32be($payload, $off + 5);
+            def dstart as int init $off + 9;
+            if ($dstart + $clen > len($payload)) {
+                $clen = len($payload) - $dstart;
+            }
+            def cdata as bytes init $payload[$dstart..$dstart + $clen];
+            if ($cptype == CPTYPE_PASSSALT) {
+                $salt = $cdata;
+            } elseif ($cptype == CPTYPE_END_AUTH) {
+                $endAuth = true;
+            }
+            $off = $dstart + $clen;
+        } else {
+            $plain = $plain + convert.stringFromBytes("utf-8", $payload[$off..]);
+            $off = len($payload);
+        }
+    }
+    appendBuf($s.state, $plain);
+    return Frame{plain: $plain, salt: $salt, endAuth: $endAuth, ended: false};
+}
+
+# markEnd records that the server closed the session.
+func markEnd(s as Session) {
+    kv.set($s.state, "open", "0", 0);
+    return Frame{plain: "", salt: emptyBytes(), endAuth: false, ended: true};
+}
+
+# dispatch handles one received packet, returning the Frame(s) it produced (a
+# DATA or END frame, or none) for the caller to collect in its own accumulator.
+func dispatch(s as Session, pkt as bytes) {
+    def out as list of Frame init [];
+    def h as Header init parseHeader($pkt);
+    if (not ours($s, $h)) {
+        return $out;
+    }
+    if ($h.ptype == PTYPE_DATA) {
+        $out[] = processData($s, $pkt);
+    } elseif ($h.ptype == PTYPE_END) {
+        $out[] = markEnd($s);
+    }
+    return $out;
+}
+
+# sendReliable sends a packet and resends it on the retransmit schedule until an
+# ACK for this session arrives, draining (and collecting) any DATA / END packets
+# that turn up while waiting. Returns the collected Frames; throws kind "timeout"
+# when the schedule runs out.
+func sendReliable(s as Session, packet as bytes) {
+    def frames as list of Frame init [];
+    for (def interval in retransmitMs()) {
+        sendRaw($s, $packet);
+        def pkt as bytes init recvPacket($s, $interval);
+        while (len($pkt) > 0) {
+            def h as Header init parseHeader($pkt);
+            if (ours($s, $h) and $h.ptype == PTYPE_ACK) {
+                return $frames;
+            }
+            for (def fr in dispatch($s, $pkt)) {
+                $frames[] = $fr;
+            }
+            $pkt = recvPacket($s, POLL_MS);
+        }
+    }
+    throw Error{
+        kind: "timeout",
+        message: "mactelnet: timed out waiting for the router " +
+            "(wrong MAC, or mac-server off on this port?)"
+    };
+}
+
+# pump receives for up to timeoutMs, ACKing and collecting server DATA / END
+# packets, and returns the collected Frames (no send).
+func pump(s as Session, timeoutMs as int) {
+    def frames as list of Frame init [];
+    def pkt as bytes init recvPacket($s, $timeoutMs);
+    while (len($pkt) > 0) {
+        for (def fr in dispatch($s, $pkt)) {
+            $frames[] = $fr;
+        }
+        $pkt = recvPacket($s, POLL_MS);
+    }
+    return $frames;
+}
+
+# sendData sends a DATA packet (header + payload) reliably and advances the send
+# counter by the payload length. Returns the Frames seen while waiting.
+func sendData(s as Session, payload as bytes) {
+    def out as int init getInt($s.state, "out");
+    def pkt as bytes init binary.concat(
+        buildHeader(PTYPE_DATA, $s.srcmac, $s.dstmac, $s.seskey, $out),
+        $payload);
+    def frames as list of Frame init sendReliable($s, $pkt);
+    setInt($s.state, "out", $out + len($payload));
+    return $frames;
+}
+
+# findSalt returns the first auth salt among frames, or empty bytes.
+func findSalt(frames as list of Frame) {
+    for (def f in $frames) {
+        if (len($f.salt) > 0) {
+            return $f.salt;
+        }
+    }
+    return emptyBytes();
+}
+
+func anyEndAuth(frames as list of Frame) {
+    for (def f in $frames) {
+        if ($f.endAuth) {
+            return true;
+        }
+    }
+    return false;
+}
+
+func anyEnded(frames as list of Frame) {
+    for (def f in $frames) {
+        if ($f.ended) {
+            return true;
+        }
+    }
+    return false;
+}
+
+func closeQuiet(s as Session) {
+    try {
+        net.close($s.sock);
+    } catch (e) { # lint-disable: L103
+    }
+    try {
+        kv.close($s.state);
+    } catch (e) { # lint-disable: L103
+    }
+    return;
+}
+
+# --- public API -------------------------------------------------------------
+
+/**
+ * Open a MAC-Telnet console to a router by MAC address and log in. Runs the full
+ * session-start + authentication handshake (auto-detecting MD5 vs EC-SRP from
+ * the router's salt) and returns a logged-in `Session`.
+ *
+ * `iface` is the local interface to reach the router on: its MAC is read from
+ * `/sys/class/net/<iface>/address`, and the broadcast socket is best-effort bound
+ * to the interface (`SO_BINDTODEVICE`) so a multi-homed host sends out that link
+ * rather than one the kernel routing table picks. The bind needs root; when
+ * unprivileged it is skipped (fine on a single-NIC host, but a multi-homed host
+ * should run this with privilege or it may time out on the wrong NIC). `mac` is
+ * the router's MAC. A blank password is valid (a factory-default `admin`). Throws
+ * kind `"timeout"` when the router does not answer and `Error{kind: "mactelnet"}`
+ * on a failed login.
+ * @param iface {string} local network interface name (e.g. "eth0")
+ * @param mac {string} the router's MAC address
+ * @param user {string} the login user (e.g. "admin")
+ * @param password {string} the login password ("" for none)
+ * @return {Session} a logged-in session
+ */
+export func connect(iface as string, mac as string, user as string, password as string) {
+    return openSession($iface, $mac, $user, $password, "255.255.255.255:{MT_PORT}");
+}
+
+# openSession is `connect` with the "host:port" every packet goes to: the
+# limited broadcast address for `connect`, a loopback peer in the tests, which
+# have no broadcast segment.
+func openSession(
+    iface as string,
+    mac as string,
+    user as string,
+    password as string,
+    target as string) {
+    def src as bytes init localMac($iface);
+    def dst as bytes init parseMac($mac);
+    def seskey as int init crypto.randInt(1, 65534);
+    def kp as crypto.Keypair init crypto.mtweiKeygen();
+
+    def store as kv.Store init kv.open();
+    kv.set($store, "out", "0", 0);
+    kv.set($store, "in", "-1", 0);
+    kv.set($store, "buf", "", 0);
+    kv.set($store, "open", "1", 0);
+    kv.set($store, "target", $target, 0);
+
+    def sock as net.UDPSocket init net.listenUDP("0.0.0.0:0");
+    net.setBroadcast($sock, true);
+    # Pin egress/ingress to the named interface so a multi-homed host does not
+    # send the broadcast out the wrong NIC (best-effort - needs root).
+    bindDevice($sock, $iface);
+    def s as Session init Session{
+        sock: $sock,
+        state: $store,
+        srcmac: $src,
+        dstmac: $dst,
+        seskey: $seskey
+    };
+    # Any failure from here on (no answer, no salt, a refused login) releases
+    # the socket and the session state; on success the caller owns them.
+    errdefer closeQuiet($s);
+
+    # 1. Start the session (wait for the router's ACK - proof of reachability).
+    sendReliable($s, buildHeader(PTYPE_SESSIONSTART, $src, $dst, $seskey, 0));
+
+    # 2. Begin auth and offer our EC-SRP public key. The router replies with a
+    #    salt whose length selects the algorithm.
+    def auth1 as bytes init binary.concat(
+        controlBlock(CPTYPE_BEGINAUTH, emptyBytes()),
+        controlBlock(CPTYPE_PASSSALT, loginKey($user, $kp.public)));
+    def frames as list of Frame init sendData($s, $auth1);
+    def salt as bytes init findSalt($frames);
+    def tries as int init 0;
+    while (len($salt) == 0 and $tries < 20) {
+        $salt = findSalt(pump($s, 400));
+        $tries = $tries + 1;
+    }
+    if (len($salt) == 0) {
+        fail("no auth salt from the router (is mac-server enabled on this interface?)");
+    }
+
+    # 3. Build the password proof for the offered algorithm.
+    def pwctl as bytes;
+    if (len($salt) == 16) {
+        $pwctl = controlBlock(CPTYPE_PASSWORD, md5Password($password, $salt));
+    } elseif (len($salt) == 49) {
+        def serverKey as bytes init $salt[..33];
+        def salt16 as bytes init $salt[33..49];
+        def validator as bytes init crypto.mtweiId($user, $password, $salt16);
+        def resp as bytes init crypto.mtweiClientKey(
+            $kp.private,
+            $serverKey,
+            $kp.public,
+            $validator);
+        $pwctl = controlBlock(CPTYPE_PASSWORD, $resp);
+    } else {
+        def saltLen as int init len($salt);
+        fail("unexpected salt length {$saltLen} (want 16 or 49)");
+    }
+
+    # 4. Send credentials + terminal parameters, then wait for end-of-auth.
+    def auth2 as bytes init binary.join([
+        $pwctl,
+        controlBlock(CPTYPE_USERNAME, utf8($user)),
+        controlBlock(CPTYPE_TERM_TYPE, utf8("vt100")),
+        controlBlock(CPTYPE_TERM_WIDTH, u16le(80)),
+        controlBlock(CPTYPE_TERM_HEIGHT, u16le(24))
+    ]);
+    def frames2 as list of Frame init sendData($s, $auth2);
+
+    def ok as bool init anyEndAuth($frames2);
+    def ended as bool init anyEnded($frames2);
+    def tries2 as int init 0;
+    while (not $ok and not $ended and $tries2 < 20) {
+        def more as list of Frame init pump($s, 500);
+        if (anyEndAuth($more)) {
+            $ok = true;
+        }
+        if (anyEnded($more)) {
+            $ended = true;
+        }
+        $tries2 = $tries2 + 1;
+    }
+    if (not $ok) {
+        def msg as string init strings.trim(drainBuf($s.state));
+        if (len($msg) == 0) {
+            $msg = "login failed (wrong username or password?)";
+        }
+        fail("login failed: " + $msg);
+    }
+    return $s;
+}
+
+/**
+ * Send a console command (or any raw input) to the router. Include a trailing
+ * "\r\n" to submit a command line. Output is not returned here; read it with
+ * `recv`.
+ * @param s {Session} the session
+ * @param text {string} the text to send
+ * @return {null} nothing
+ */
+export func send(s as Session, text as string) {
+    sendData($s, utf8($text));
+    return;
+}
+
+/**
+ * Read whatever console output has arrived, waiting up to `timeoutMs` for the
+ * first byte. Returns the accumulated text (possibly ""); call it again to read
+ * more. ANSI escape sequences from the RouterOS CLI are passed through verbatim.
+ * @param s {Session} the session
+ * @param timeoutMs {int} how long to wait for output, in milliseconds
+ * @return {string} the console output received
+ */
+export func recv(s as Session, timeoutMs as int) {
+    pump($s, $timeoutMs);
+    return drainBuf($s.state);
+}
+
+/**
+ * Whether the router has closed the session (an END packet was seen).
+ * @param s {Session} the session
+ * @return {bool} true once the session has ended
+ */
+export func closed(s as Session) {
+    return kv.get($s.state, "open") == "0";
+}
+
+/**
+ * End the session: tell the router, then release the socket and session state.
+ * @param s {Session} the session
+ * @return {null} nothing
+ */
+export func close(s as Session) {
+    try {
+        sendRaw($s, buildHeader(PTYPE_END, $s.srcmac, $s.dstmac, $s.seskey, 0));
+    } catch (e) { # lint-disable: L103
+    }
+    closeQuiet($s);
+    return;
+}
