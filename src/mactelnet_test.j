@@ -227,7 +227,8 @@ func proofOk(proof as bytes, password as string, salt as bytes) {
 }
 
 # fakeRouter answers MAC-Telnet sessions on `sock` until a client ends one or
-# nothing arrives for two seconds, and returns the console lines it was sent.
+# nothing arrives for two seconds, and returns the console lines it was sent,
+# with "<proof>" where a password proof arrived.
 # A `salt` of 16 bytes selects MD5 and the password is checked; one of 49 bytes
 # selects EC-SRP, where only the proof's length is checked (the router side of
 # EC-SRP is not in `crypto`). "/quit" makes the router end the session.
@@ -259,6 +260,9 @@ func fakeRouter(sock as net.UDPSocket, password as string, salt as bytes) {
                 $dg.peer,
                 srvHeader(PTYPE_ACK, $seskey, readU32be($pkt, 18) + len($payload)));
             def l as Login init readLogin($payload);
+            if ($l.hasPassword) {
+                $lines[] = "<proof>";
+            }
             if ($l.hasPassword and not proofOk($l.password, $password, $salt)) {
                 # a refused login: the router's text, then the end of the session
                 def refusal as bytes init utf8("Login failed\r\n");
@@ -297,6 +301,13 @@ func fakeRouter(sock as net.UDPSocket, password as string, salt as bytes) {
     }
 }
 
+# legacy opts in to the MD5 login of an old router.
+func legacy(o as Options) {
+    def out as Options init $o;
+    $out.allowLegacyMd5 = true;
+    return $out;
+}
+
 func md5Salt() {
     return utf8("mactelnet16bsalt");
 }
@@ -312,7 +323,9 @@ func testMd5Session() {
     def peer as task of list of string init spawn {
         return fakeRouter($sock, "test", md5Salt());
     };
-    def s as Session init openSession("lo", ROUTER_MAC, "admin", "test", net.address($sock));
+    def s as Session init openSession(
+        legacy(options("lo", ROUTER_MAC, "admin", "test")),
+        net.address($sock));
     testing.assertContains(recv($s, 800), "logged in");
     send($s, "/ip address print\r\n");
     def out as string init recv($s, 800);
@@ -320,7 +333,7 @@ func testMd5Session() {
     testing.assertFalse(strings.contains($out, "SPOOFED"));
     testing.assertFalse(closed($s));
     close($s);
-    testing.assertEqual(task.wait($peer), ["/ip address print\r\n"]);
+    testing.assertEqual(task.wait($peer), ["<proof>", "/ip address print\r\n"]);
 }
 
 func testEcSrpSession() {
@@ -329,12 +342,12 @@ func testEcSrpSession() {
     def peer as task of list of string init spawn {
         return fakeRouter($sock, "", ecSrpSalt());
     };
-    def s as Session init openSession("lo", ROUTER_MAC, "admin", "", net.address($sock));
+    def s as Session init openSession(options("lo", ROUTER_MAC, "admin", ""), net.address($sock));
     send($s, "/quit\r\n");
     recv($s, 500);
     testing.assertTrue(closed($s));
     close($s);
-    testing.assertEqual(task.wait($peer), ["/quit\r\n"]);
+    testing.assertEqual(task.wait($peer), ["<proof>", "/quit\r\n"]);
 }
 
 func testAWrongPasswordIsAMactelnetError() {
@@ -344,7 +357,7 @@ func testAWrongPasswordIsAMactelnetError() {
         return fakeRouter($sock, "correct-horse", md5Salt());
     };
     try {
-        openSession("lo", ROUTER_MAC, "admin", "wrong", net.address($sock));
+        openSession(legacy(options("lo", ROUTER_MAC, "admin", "wrong")), net.address($sock));
         throw Error{kind: "missed", message: "a refused login"};
     } catch (e) {
         testing.assertEqual($e.kind, "mactelnet");
@@ -359,7 +372,7 @@ func testASilentRouterIsATimeout() {
     def sock as net.UDPSocket init net.listenUDP("127.0.0.1:0");
     defer net.close($sock);
     try {
-        openSession("lo", ROUTER_MAC, "admin", "", net.address($sock));
+        openSession(options("lo", ROUTER_MAC, "admin", ""), net.address($sock));
         throw Error{kind: "missed", message: "a timeout"};
     } catch (e) {
         testing.assertEqual($e.kind, "timeout");
@@ -373,6 +386,12 @@ func testAnUnknownInterfaceIsAMactelnetError() {
     } catch (e) {
         testing.assertEqual($e.kind, "mactelnet");
         testing.assertContains($e.message, "no such network interface");
+    }
+    try {
+        connectWith(legacy(options("no-such-if0", ROUTER_MAC, "admin", "")));
+        throw Error{kind: "missed", message: "a missing interface"};
+    } catch (e) {
+        testing.assertEqual($e.kind, "mactelnet");
     }
 }
 
@@ -401,3 +420,127 @@ func testRecvPacketPassesOnAClosedSocket() {
     task.wait($closer);
 }
 
+# A router that offers only the MD5 login is refused before any password proof
+# is sent: the proof would let it, or anyone watching, guess the password
+# offline. The opt-in is shown by testMd5Session.
+func testAnMd5OnlyRouterIsRefusedByDefault() {
+    def sock as net.UDPSocket init net.listenUDP("127.0.0.1:0");
+    defer net.close($sock);
+    def peer as task of list of string init spawn {
+        return fakeRouter($sock, "test", md5Salt());
+    };
+    testing.assertFalse(options("lo", ROUTER_MAC, "admin", "test").allowLegacyMd5);
+    try {
+        openSession(options("lo", ROUTER_MAC, "admin", "test"), net.address($sock));
+        throw Error{kind: "missed", message: "a refused MD5 login"};
+    } catch (e) {
+        testing.assertEqual($e.kind, "mactelnet");
+        testing.assertContains($e.message, "allowLegacyMd5");
+    }
+    testing.assertEqual(task.wait($peer), []);
+}
+
+# --- deadlines and the console buffer -----------------------------------------
+
+# looseSession is a session on a loopback socket that sends to `target`, with
+# the counters of a fresh login.
+func looseSession(target as string) {
+    def store as kv.Store init kv.open();
+    kv.set($store, "out", "0", 0);
+    kv.set($store, "in", "-1", 0);
+    kv.set($store, "buf", "", 0);
+    kv.set($store, "open", "1", 0);
+    kv.set($store, "target", $target, 0);
+    return Session{
+        sock: net.listenUDP("127.0.0.1:0"),
+        state: $store,
+        srcmac: binary.make(6),
+        dstmac: parseMac(ROUTER_MAC),
+        seskey: 1234
+    };
+}
+
+# flood sends a header-sized datagram that belongs to no session to `addr`
+# every 20 ms, until `stop` holds "1" or eight seconds have passed.
+func flood(addr as string, stop as kv.Store) {
+    def sender as net.UDPSocket init net.listenUDP("127.0.0.1:0");
+    defer net.close($sender);
+    def junk as bytes init binary.make(32);
+    $junk[0] = 1;
+    for (def i in 0..400) {
+        if (kv.get($stop, "stop") == "1") {
+            return null;
+        }
+        net.sendTo($sender, $addr, $junk);
+        time.sleep(time.fromMilliseconds(20));
+    }
+    return null;
+}
+
+func clockMs() {
+    return time.unixMillis(time.now());
+}
+
+func msSince(start as int) {
+    return clockMs() - $start;
+}
+
+# Datagrams for no session restart no wait: a send under a flood still times
+# out on its schedule (about 3.3 seconds), and recv returns at its deadline.
+func testAFloodCannotStretchTheWaits() {
+    def sink as net.UDPSocket init net.listenUDP("127.0.0.1:0");
+    defer net.close($sink);
+    def s as Session init looseSession(net.address($sink));
+    defer net.close($s.sock);
+    def stop as kv.Store init kv.open();
+    kv.set($stop, "stop", "0", 0);
+    def flooder as task of null init spawn {
+        return flood(net.address($s.sock), $stop);
+    };
+    def t0 as int init clockMs();
+    try {
+        sendReliable($s, buildHeader(PTYPE_SESSIONSTART, $s.srcmac, $s.dstmac, $s.seskey, 0));
+        throw Error{kind: "missed", message: "a timeout"};
+    } catch (e) {
+        testing.assertEqual($e.kind, "timeout");
+    }
+    def sendMs as int init msSince($t0);
+    $t0 = clockMs();
+    testing.assertEqual(recv($s, 300), "");
+    def recvMs as int init msSince($t0);
+    kv.set($stop, "stop", "1", 0);
+    task.wait($flooder);
+    testing.assertTrue($sendMs < 5000);
+    testing.assertTrue($recvMs < 1000);
+}
+
+# Console output nobody reads stops at 1 Mi characters (MAX_CONSOLE_CHARS): the
+# packet that would pass it is kind "limit", neither acknowledged nor counted,
+# so the router resends it, and it is taken once recv has drained the buffer.
+func testUnreadConsoleOutputIsCapped() {
+    def sink as net.UDPSocket init net.listenUDP("127.0.0.1:0");
+    defer net.close($sink);
+    def s as Session init looseSession(net.address($sink));
+    defer net.close($s.sock);
+    kv.set($s.state, "buf", strings.repeat("x", 1048574), 0);
+    def pkt as bytes init binary.concat(srvHeader(PTYPE_DATA, 1234, 0), utf8("hello"));
+    try {
+        processData($s, $pkt);
+        throw Error{kind: "missed", message: "a full buffer"};
+    } catch (e) {
+        testing.assertEqual($e.kind, "limit");
+    }
+    testing.assertEqual(getInt($s.state, "in"), -1);
+    net.setReadDeadline($sink, 200);
+    try {
+        net.recvFrom($sink, MAX_DATAGRAM);
+        throw Error{kind: "missed", message: "no ACK"};
+    } catch (e) {
+        testing.assertEqual($e.kind, "timeout");
+    }
+    testing.assertEqual(len(recv($s, 0)), 1048574);
+    processData($s, $pkt);
+    testing.assertEqual(recv($s, 0), "hello");
+    testing.assertEqual(getInt($s.state, "in"), 0);
+    testing.assertEqual(MAX_CONSOLE_CHARS, 1048576);
+}

@@ -35,20 +35,40 @@ mactelnet.close($s);
 The console is the router's text CLI, not the API: send a command line ending
 in `\r\n`, as you would type it, and read the echo and output with `recv`.
 `recv` returns what has arrived, possibly `""`, and passes the CLI's ANSI
-escapes through. `closed` tells whether the router ended the session.
+escapes through. It waits at most `timeoutMs`, even while output keeps coming;
+call it again for the rest. `closed` tells whether the router ended the
+session.
+
+Output the router sends while you are not calling `recv` (during `send`, say)
+is kept for the next `recv`, up to 1 Mi characters. Past that the call throws
+kind `"limit"`; the packet is not acknowledged, so the router sends it again
+after a `recv` has made room.
 
 A blank password is valid; a factory-default router has `admin` with none.
 
 ## Login
 
-The router picks the login method by the salt it sends, and `connect` follows:
+The router picks the login method by the salt it sends:
 
 | Salt | Method | RouterOS |
 |---|---|---|
-| 16 bytes | MD5: `0x00` + MD5(`0x00` + password + salt) | before 6.43 |
 | 49 bytes | EC-SRP over Curve25519 (`crypto.mtwei*`) | 6.43 and later, all of v7 |
+| 16 bytes | MD5: `0x00` + MD5(`0x00` + password + salt) | before 6.43 |
 
-Neither sends the password itself.
+Neither sends the password itself, but an MD5 proof is enough to test
+password guesses against offline, for anyone who captures it on the segment
+or a host that answers in the router's place and offers the 16-byte salt. So
+`connect` speaks EC-SRP only, and refuses a router offering MD5 with an
+`Error` of kind `"mactelnet"` before the proof is sent.
+
+To reach a router older than 6.43, opt in on a wire you trust, and upgrade the
+router once you are in:
+
+```jennifer
+def o as mactelnet.Options init mactelnet.options("eth0", "e4:8d:8c:11:22:33", "admin", "");
+$o.allowLegacyMd5 = true;
+def s as mactelnet.Session init mactelnet.connectWith($o);
+```
 
 ## The local interface
 
@@ -69,7 +89,8 @@ RouterOS answers MAC-Telnet on every interface by default. A router with
 ## Errors
 
 A failed login throws an `Error` of kind `"mactelnet"` with the router's own
-text; so do an unknown local interface and a malformed MAC address. A router
+text; so do a refused MD5 login, an unknown local interface and a malformed
+MAC address. A router
 that does not answer within about three seconds of retransmits (a wrong MAC,
 a mac-server that is off, another segment) is kind `"timeout"`. A socket
 failure comes from `net` unchanged.

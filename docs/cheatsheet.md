@@ -10,11 +10,23 @@ Every export of `@jennifer/mactelnet`. Background is in
 import "@jennifer/mactelnet/" as mactelnet;
 ```
 
-A failed login, an unknown local interface and a malformed MAC address throw
-an `Error` of kind `"mactelnet"`. A router that does not answer is kind
-`"timeout"`; a socket failure comes from `net` unchanged.
+A failed or refused login, an unknown local interface and a malformed MAC
+address throw an `Error` of kind `"mactelnet"`. A router that does not answer
+is kind `"timeout"`, console output left unread past 1 Mi characters
+(`MAX_CONSOLE_CHARS`) kind `"limit"`; a socket failure comes from `net`
+unchanged.
 
 ## Types
+
+### `Options`
+
+| Field | Meaning |
+|---|---|
+| `iface as string` | local network interface |
+| `mac as string` | router MAC address |
+| `user as string` | login user |
+| `password as string` | login password, `""` for none |
+| `allowLegacyMd5 as bool` | accept the MD5 login of RouterOS before 6.43; default `false` |
 
 ### `Session`
 
@@ -30,9 +42,11 @@ an `Error` of kind `"mactelnet"`. A router that does not answer is kind
 
 | Function | Returns | Notes |
 |---|---|---|
-| `mactelnet.connect(iface, mac, user, password)` | `Session` | session start and login, MD5 or EC-SRP by the router's salt |
+| `mactelnet.connect(iface, mac, user, password)` | `Session` | session start and EC-SRP login; a router offering only MD5 is refused |
+| `mactelnet.options(iface, mac, user, password)` | `Options` | what `connect` uses, `allowLegacyMd5` off |
+| `mactelnet.connectWith(opts)` | `Session` | `connect` with options; MD5 only with `allowLegacyMd5` |
 | `mactelnet.send(s, text)` | | console input; end a command with `"\r\n"` |
-| `mactelnet.recv(s, timeoutMs)` | `string` | output so far, waiting up to `timeoutMs` for the first packet |
+| `mactelnet.recv(s, timeoutMs)` | `string` | output so far, waiting at most `timeoutMs` |
 | `mactelnet.closed(s)` | `bool` | whether the router ended the session |
 | `mactelnet.close(s)` | | end the session, release the socket |
 
