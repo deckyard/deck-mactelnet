@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 /**
  * White-box tests for the entry module: jennifer test src/mactelnet_test.j
@@ -153,7 +153,7 @@ func testRecvPacketDropsRunt() {
         dstmac: emptyBytes(),
         seskey: 0
     };
-    def runt as bytes init convert.bytesFromString("utf-8", "hello");
+    def runt as bytes init encoding.encode("utf-8", "hello");
     def full as bytes init binary.make(HEADER_LEN);
     net.sendTo($sender, $addr, $runt);
     net.sendTo($sender, $addr, $full);
@@ -211,7 +211,7 @@ func readLogin(payload as bytes) {
         }
         $off = $off + 9 + $clen;
     }
-    $l.plain = convert.stringFromBytes("utf-8", $payload[$off..]);
+    $l.plain = encoding.decode("utf-8", $payload[$off..]);
     return $l;
 }
 
@@ -522,7 +522,7 @@ func testUnreadConsoleOutputIsCapped() {
     defer net.close($sink);
     def s as Session init looseSession(net.address($sink));
     defer net.close($s.sock);
-    kv.set($s.state, "buf", strings.repeat("x", 1048574), 0);
+    kv.set($s.state, "buf", strings.replicate("x", 1048574), 0);
     def pkt as bytes init binary.concat(srvHeader(PTYPE_DATA, 1234, 0), utf8("hello"));
     try {
         processData($s, $pkt);
