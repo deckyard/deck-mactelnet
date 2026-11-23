@@ -227,16 +227,16 @@ func proofOk(proof as bytes, password as string, salt as bytes) {
 }
 
 # fakeRouter answers MAC-Telnet sessions on `sock` until a client ends one or
-# nothing arrives for two seconds, and returns the console lines it was sent,
+# nothing arrives for `idleMs`, and returns the console lines it was sent,
 # with "<proof>" where a password proof arrived.
 # A `salt` of 16 bytes selects MD5 and the password is checked; one of 49 bytes
 # selects EC-SRP, where only the proof's length is checked (the router side of
 # EC-SRP is not in `crypto`). "/quit" makes the router end the session.
-func fakeRouter(sock as net.UDPSocket, password as string, salt as bytes) {
+func fakeRouter(sock as net.UDPSocket, password as string, salt as bytes, idleMs as int) {
     def lines as list of string init [];
     def out as int init 0;
     while (true) {
-        net.setReadDeadline($sock, 2000);
+        net.setReadDeadline($sock, $idleMs);
         def dg as net.Datagram;
         try {
             $dg = net.recvFrom($sock, MAX_DATAGRAM);
@@ -321,7 +321,7 @@ func testMd5Session() {
     def sock as net.UDPSocket init net.listenUDP("127.0.0.1:0");
     defer net.close($sock);
     def peer as task of list of string init spawn {
-        return fakeRouter($sock, "test", md5Salt());
+        return fakeRouter($sock, "test", md5Salt(), 2000);
     };
     def s as Session init openSession(
         legacy(options("lo", ROUTER_MAC, "admin", "test")),
@@ -340,7 +340,7 @@ func testEcSrpSession() {
     def sock as net.UDPSocket init net.listenUDP("127.0.0.1:0");
     defer net.close($sock);
     def peer as task of list of string init spawn {
-        return fakeRouter($sock, "", ecSrpSalt());
+        return fakeRouter($sock, "", ecSrpSalt(), 2000);
     };
     def s as Session init openSession(options("lo", ROUTER_MAC, "admin", ""), net.address($sock));
     send($s, "/quit\r\n");
@@ -354,7 +354,7 @@ func testAWrongPasswordIsAMactelnetError() {
     def sock as net.UDPSocket init net.listenUDP("127.0.0.1:0");
     defer net.close($sock);
     def peer as task of list of string init spawn {
-        return fakeRouter($sock, "correct-horse", md5Salt());
+        return fakeRouter($sock, "correct-horse", md5Salt(), 2000);
     };
     try {
         openSession(legacy(options("lo", ROUTER_MAC, "admin", "wrong")), net.address($sock));
@@ -427,7 +427,8 @@ func testAnMd5OnlyRouterIsRefusedByDefault() {
     def sock as net.UDPSocket init net.listenUDP("127.0.0.1:0");
     defer net.close($sock);
     def peer as task of list of string init spawn {
-        return fakeRouter($sock, "test", md5Salt());
+        # the refused client goes quiet: the router stops 500 ms later
+        return fakeRouter($sock, "test", md5Salt(), 500);
     };
     testing.assertFalse(options("lo", ROUTER_MAC, "admin", "test").allowLegacyMd5);
     try {
