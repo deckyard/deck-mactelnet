@@ -5,7 +5,7 @@
 
 ## Scope
 
-The deck is a MAC-Telnet client: session start, login (MD5 or EC-SRP), and a
+The deck is a MAC-Telnet™ client: session start, login (MD5 or EC-SRP), and a
 console session over broadcast UDP to a router identified by MAC address. It
 exists to reach a router that has no IP address yet.
 
@@ -15,7 +15,7 @@ It leaves out:
   no window-size updates after login and no ANSI parsing.
 - **The server side** and MAC-Telnet discovery (MNDP). The caller knows the
   router's MAC, from its label or a neighbour list.
-- **Anything beyond bootstrap.** Configuration over IP belongs to the RouterOS
+- **Anything beyond bootstrap.** Configuration over IP belongs to the RouterOS™
   API (`@jennifer/mikrotik`), which has TLS.
 
 ## Decisions
@@ -113,4 +113,4 @@ one, so CI parses it only.
 - `crypto.mtweiKeygen` / `mtweiId` / `mtweiClientKey` (EC-SRP) and
   `net.bindToDevice`, which stay in the interpreter after the bundled module is
   removed, plus `net`'s broadcast UDP and `kv`.
-- The `net` capability and Linux, so the default `jennifer` binary only.
+- The `net` capability and Linux™, so the default `jennifer` binary only.

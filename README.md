@@ -4,8 +4,8 @@
 [![Documentation](https://img.shields.io/badge/docs-github%20pages-blue)](https://jennifer-language.github.io/deck-mactelnet/)
 [![release](https://img.shields.io/github/v/release/jennifer-language/deck-mactelnet)](https://github.com/jennifer-language/deck-mactelnet/releases/latest)
 
-A [Jennifer](https://jennifer-lang.dev/) deck that opens a MikroTik MAC-Telnet
-console: a RouterOS command line reached by the router's MAC address, with no
+A [Jennifer](https://jennifer-lang.dev/) deck that opens a MikroTik™ MAC-Telnet™
+console: a RouterOS™ command line reached by the router's MAC address, with no
 IP configured on either side. It is the way to give a fresh or just-reset
 router its first address.
 
@@ -40,7 +40,7 @@ mactelnet.close($s);
 
 ## Requirements
 
-Jennifer 0.27.0 or newer, the default `jennifer` binary (`net`) on Linux, not
+Jennifer 0.27.0 or newer, the default `jennifer` binary (`net`) on Linux™, not
 `jennifer-tiny`, and the router on the same Layer-2 segment.
 
 ## Development
@@ -58,3 +58,11 @@ LGPL-3.0-only, see [LICENSE](LICENSE). Copyright (C) 2026 mplx &lt;mplx@jennifer
 
 `tools/check-headers.sh` checks every source file's SPDX header against
 `deck.toml`.
+
+## Trademarks
+
+MikroTik™ and RouterOS™ are trademarks of SIA "Mikrotīkls". Linux™ is a
+trademark of Linus Torvalds. Other product and company names may be
+trademarks of their respective owners. They are used only to identify the
+products this deck works with. This deck is an independent project, not
+affiliated with, sponsored or endorsed by SIA Mikrotikls or Linus Torvalds.

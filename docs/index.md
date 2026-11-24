@@ -3,8 +3,8 @@
 
 # @jennifer/mactelnet
 
-A MikroTik MAC-Telnet client: a console to a RouterOS device by its MAC
-address, with no IP configured on either side, as Winbox's "Neighbors" console
+A MikroTik™ MAC-Telnet™ client: a console to a RouterOS™ device by its MAC
+address, with no IP configured on either side, as Winbox™'s "Neighbors" console
 does. It is how a fresh or just-reset router gets its first address, before
 you move on to the RouterOS API over IP (`@jennifer/mikrotik`). The full API
 is on the [cheatsheet](cheatsheet.md).
@@ -78,7 +78,7 @@ inside, so they reach a router that has no address yet.
 
 `iface` stamps the packets with that interface's MAC, and the socket is bound
 to the interface (`SO_BINDTODEVICE`) so the broadcast leaves through it. The
-bind needs no privilege on Linux 5.7 and later; older kernels need
+bind needs no privilege on Linux™ 5.7 and later; older kernels need
 `CAP_NET_RAW`, and without it the socket stays unbound. With one network link
 up that does not matter; with several, an unprivileged run on an old kernel
 can send out the wrong one and time out.
@@ -130,3 +130,11 @@ import "@jennifer/mactelnet/" as mactelnet;     # after: jvc add @jennifer/macte
 
 The deck does not read `JENNIFER_MACTELNET_TARGET`, the module's hook for its
 own tests.
+
+## Trademarks
+
+MikroTik™ and RouterOS™ are trademarks of SIA "Mikrotīkls". Linux™ is a
+trademark of Linus Torvalds. Other product and company names may be
+trademarks of their respective owners. They are used only to identify the
+products this deck works with. This deck is an independent project, not
+affiliated with, sponsored or endorsed by SIA Mikrotikls or Linus Torvalds.

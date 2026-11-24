@@ -26,7 +26,7 @@ unchanged.
 | `mac as string` | router MAC address |
 | `user as string` | login user |
 | `password as string` | login password, `""` for none |
-| `allowLegacyMd5 as bool` | accept the MD5 login of RouterOS before 6.43; default `false` |
+| `allowLegacyMd5 as bool` | accept the MD5 login of RouterOS™ before 6.43; default `false` |
 
 ### `Session`
 
