@@ -3,11 +3,11 @@
 
 # mactelnet cheatsheet
 
-Every export of `@jennifer/mactelnet`. Background is in
+Every export of `@deckyard/mactelnet`. Background is in
 [the introduction](index.md).
 
 ```jennifer
-import "@jennifer/mactelnet/" as mactelnet;
+import "@deckyard/mactelnet/" as mactelnet;
 ```
 
 A failed or refused login, an unknown local interface and a malformed MAC

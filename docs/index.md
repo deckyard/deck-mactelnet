@@ -1,12 +1,12 @@
 <!-- SPDX-License-Identifier: LGPL-3.0-only -->
 <!-- SPDX-FileCopyrightText: Copyright (C) 2026 mplx <mplx@jennifer-lang.dev> -->
 
-# @jennifer/mactelnet
+# @deckyard/mactelnet
 
 A MikroTik™ MAC-Telnet™ client: a console to a RouterOS™ device by its MAC
 address, with no IP configured on either side, as Winbox™'s "Neighbors" console
 does. It is how a fresh or just-reset router gets its first address, before
-you move on to the RouterOS API over IP (`@jennifer/mikrotik`). The full API
+you move on to the RouterOS API over IP (`@deckyard/mikrotik`). The full API
 is on the [cheatsheet](cheatsheet.md).
 
 ## Conventions
@@ -14,7 +14,7 @@ is on the [cheatsheet](cheatsheet.md).
 Snippets assume this import:
 
 ```jennifer
-import "@jennifer/mactelnet/" as mactelnet;
+import "@deckyard/mactelnet/" as mactelnet;
 ```
 
 The trailing slash resolves to the entry module.
@@ -117,6 +117,15 @@ MAC-Telnet is cleartext: the password proof is hashed, but every command and
 its output can be read by any host on the segment. Use it to bootstrap a
 router on a wire you trust, then switch to api-ssl over IP.
 
+## Moving from `@jennifer/mactelnet`
+
+Up to 0.2.0 this deck was `@jennifer/mactelnet`. Change the `[decks]` entry to
+`"@deckyard/mactelnet" = "^0.3.0"` and the imports:
+
+```jennifer
+import "@deckyard/mactelnet/" as mactelnet;
+```
+
 ## Moving from the standard library module
 
 Jennifer has bundled `mactelnet` (`modules/mactelnet.j`) since 0.25.0. The
@@ -125,7 +134,7 @@ types and functions; only the import changes:
 
 ```jennifer
 import "mactelnet.j" as mactelnet;              # before
-import "@jennifer/mactelnet/" as mactelnet;     # after: jvc add @jennifer/mactelnet
+import "@deckyard/mactelnet/" as mactelnet;     # after: jvc add @deckyard/mactelnet
 ```
 
 The deck does not read `JENNIFER_MACTELNET_TARGET`, the module's hook for its

@@ -1,7 +1,7 @@
-# Grimoire book configuration for the @jennifer/mactelnet documentation.
+# Grimoire book configuration for the @deckyard/mactelnet documentation.
 
 [book]
-title = "@jennifer/mactelnet"
+title = "@deckyard/mactelnet"
 description = "A MikroTik MAC-Telnet client: a RouterOS console by MAC address, with no IP configured, to bootstrap a fresh router"
 language = "en"
 src = "docs"
@@ -18,10 +18,10 @@ navPosition = "left"
 tocPosition = "right"
 tocDepth = 3
 sectionNumbers = true
-titleUrl = "https://jennifer-language.github.io/deck-mactelnet/"
-repoUrl = "https://github.com/jennifer-language/deck-mactelnet"
+titleUrl = "https://deckyard.github.io/deck-mactelnet/"
+repoUrl = "https://github.com/deckyard/deck-mactelnet"
 repoLabel = "Source"
-editUrl = "https://github.com/jennifer-language/deck-mactelnet/edit/main/docs/{path}"
+editUrl = "https://github.com/deckyard/deck-mactelnet/edit/main/docs/{path}"
 
 [highlight]
 enabled = true

@@ -1,6 +1,6 @@
 [package]
-name = "@jennifer/mactelnet"
-version = "0.2.0"
+name = "@deckyard/mactelnet"
+version = "0.3.0"
 description = "A MikroTik MAC-Telnet client: a RouterOS console by MAC address, with no IP configured, to bootstrap a fresh router"
 license = "LGPL-3.0-only"
 authors = ["mplx <mplx@jennifer-lang.dev>"]
@@ -10,9 +10,9 @@ capabilities = ["net"]
 keywords = ["mikrotik", "routeros", "mac-telnet", "router", "provisioning", "network"]
 
 [package.urls]
-deck = "https://raw.githubusercontent.com/jennifer-language/deck-mactelnet/main/deck.toml"
-homepage = "https://github.com/jennifer-language/deck-mactelnet"
-manual = "https://jennifer-language.github.io/deck-mactelnet/"
+deck = "https://raw.githubusercontent.com/deckyard/deck-mactelnet/main/deck.toml"
+homepage = "https://github.com/deckyard/deck-mactelnet"
+manual = "https://deckyard.github.io/deck-mactelnet/"
 
 # Only the default binary: `jennifer-tiny` has no `net` capability.
 [engines]

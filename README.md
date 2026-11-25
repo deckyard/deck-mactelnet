@@ -1,8 +1,8 @@
-# @jennifer/mactelnet
+# @deckyard/mactelnet
 
-[![test](https://github.com/jennifer-language/deck-mactelnet/actions/workflows/test.yml/badge.svg)](https://github.com/jennifer-language/deck-mactelnet/actions/workflows/test.yml)
-[![Documentation](https://img.shields.io/badge/docs-github%20pages-blue)](https://jennifer-language.github.io/deck-mactelnet/)
-[![release](https://img.shields.io/github/v/release/jennifer-language/deck-mactelnet)](https://github.com/jennifer-language/deck-mactelnet/releases/latest)
+[![test](https://github.com/deckyard/deck-mactelnet/actions/workflows/test.yml/badge.svg)](https://github.com/deckyard/deck-mactelnet/actions/workflows/test.yml)
+[![Documentation](https://img.shields.io/badge/docs-github%20pages-blue)](https://deckyard.github.io/deck-mactelnet/)
+[![release](https://img.shields.io/github/v/release/deckyard/deck-mactelnet)](https://github.com/deckyard/deck-mactelnet/releases/latest)
 
 A [Jennifer](https://jennifer-lang.dev/) deck that opens a MikroTik™ MAC-Telnet™
 console: a RouterOS™ command line reached by the router's MAC address, with no
@@ -13,15 +13,18 @@ It was Jennifer's bundled `mactelnet.j` module until 0.27; the surface is the
 same, so moving over changes only the import:
 
 ```jennifer
-import "@jennifer/mactelnet/" as mactelnet;   # was: import "mactelnet.j" as mactelnet;
+import "@deckyard/mactelnet/" as mactelnet;   # was: import "mactelnet.j" as mactelnet;
 ```
 
-**[Documentation](https://jennifer-language.github.io/deck-mactelnet/)**
+Up to 0.2.0 this deck was `@jennifer/mactelnet`. To switch, change the `[decks]`
+entry to `"@deckyard/mactelnet" = "^0.3.0"` and the imports to `"@deckyard/mactelnet/"`.
+
+**[Documentation](https://deckyard.github.io/deck-mactelnet/)**
 
 ## Install
 
 ```sh
-jvc add @jennifer/mactelnet
+jvc add @deckyard/mactelnet
 ```
 
 This vendors the deck to `vendor/<scope>/mactelnet/`. Without `jvc`, unpack the
@@ -30,7 +33,7 @@ This vendors the deck to `vendor/<scope>/mactelnet/`. Without `jvc`, unpack the
 ## Usage
 
 ```jennifer
-import "@jennifer/mactelnet/" as mactelnet;
+import "@deckyard/mactelnet/" as mactelnet;
 
 def s as mactelnet.Session init mactelnet.connect("eth0", "e4:8d:8c:11:22:33", "admin", "");
 mactelnet.send($s, "/ip address add address=192.168.88.10/24 interface=ether1\r\n");

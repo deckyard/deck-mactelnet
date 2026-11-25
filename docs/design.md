@@ -16,7 +16,7 @@ It leaves out:
 - **The server side** and MAC-Telnet discovery (MNDP). The caller knows the
   router's MAC, from its label or a neighbour list.
 - **Anything beyond bootstrap.** Configuration over IP belongs to the RouterOS™
-  API (`@jennifer/mikrotik`), which has TLS.
+  API (`@deckyard/mikrotik`), which has TLS.
 
 ## Decisions
 
@@ -52,7 +52,7 @@ router's text), an MD5 login without `allowLegacyMd5`, an unknown local
 interface, a malformed MAC address, a router that never sends a salt and a salt
 of an unknown length. These come from the
 caller's input or the router's refusal, not from a status or code the router
-reports, so there is no error struct (as for `@jennifer/statsd`, M28.57).
+reports, so there is no error struct (as for `@deckyard/statsd`, M28.57).
 
 A router that does not acknowledge the retransmit schedule is the generic
 kind `"timeout"`, and console output over the buffer cap is `"limit"`. The receive loop catches only `net`'s `"timeout"`, which

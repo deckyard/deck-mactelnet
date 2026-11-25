@@ -9,7 +9,7 @@
  * console does). The transport is UDP broadcast on port 20561 with the source
  * and destination MAC carried in the packet payload, so it reaches a router that
  * has no address yet - the way to set the first IP on a fresh or just-reset
- * device before switching to the IP-based RouterOS API (`@jennifer/mikrotik`).
+ * device before switching to the IP-based RouterOS API (`@deckyard/mikrotik`).
  *
  * `connect` runs the full session-start + authentication handshake and returns a
  * logged-in `Session`; `send` writes a console command, `recv` reads whatever
@@ -35,7 +35,7 @@
  * bootstrap a device, then move to api-ssl over IP.
  * @module mactelnet
  * @example
- * import "@jennifer/mactelnet/" as mactelnet;
+ * import "@deckyard/mactelnet/" as mactelnet;
  * def s as mactelnet.Session init mactelnet.connect("eth0", "e4:8d:8c:11:22:33", "admin", "");
  * mactelnet.send($s, "/ip address add address=192.168.88.10/24 interface=ether1\r\n");
  * def out as string init mactelnet.recv($s, 1500);
