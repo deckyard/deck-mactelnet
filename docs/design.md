@@ -107,7 +107,7 @@ one, so CI parses it only.
 
 ## Dependencies on the interpreter
 
-- The floor is `>=0.27.0`, for the UTF-8 codecs of `encoding.encode` /
+- The floor is `>=0.28.0` (the calls 0.29.0 removes are replaced by their 0.28.0 forms), for the UTF-8 codecs of `encoding.encode` /
   `decode` and `strings.replicate`; the bundled module is deprecated from
   0.26.0 (M30.1).
 - `crypto.mtweiKeygen` / `mtweiId` / `mtweiClientKey` (EC-SRP) and

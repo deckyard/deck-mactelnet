@@ -43,7 +43,7 @@ mactelnet.close($s);
 
 ## Requirements
 
-Jennifer 0.27.0 or newer, the default `jennifer` binary (`net`) on Linux™, not
+Jennifer 0.28.0 or newer, the default `jennifer` binary (`net`) on Linux™, not
 `jennifer-tiny`, and the router on the same Layer-2 segment.
 
 ## Development
