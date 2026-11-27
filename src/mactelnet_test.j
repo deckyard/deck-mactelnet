@@ -19,16 +19,29 @@ func hex(b as bytes) {
     return encoding.toText("hex", $b);
 }
 
+func be16(n as int) {
+    return binary.fromUint("be", $n, 2);
+}
+
+func be32(n as int) {
+    return binary.fromUint("be", $n, 4);
+}
+
 func zeros(n as int) {
     return binary.make($n);
 }
 
-func testByteHelpers() {
-    testing.assertEqual(hex(u16be(0xabcd)), "abcd");
-    testing.assertEqual(hex(u16le(0xabcd)), "cdab");
-    testing.assertEqual(hex(u32be(0x01020304)), "01020304");
-    testing.assertEqual(readU16be(u16be(0x1234), 0), 0x1234);
-    testing.assertEqual(readU32be(u32be(0x0a0b0c0d), 0), 0x0a0b0c0d);
+func testBuildHeaderWrapsTheCounter() {
+    # The send and ACK counters are running totals; the wire field keeps the
+    # low 32 bits, as the hand-written packer did.
+    def src as bytes init parseMac("01:02:03:04:05:06");
+    def dst as bytes init parseMac("aa:bb:cc:dd:ee:ff");
+    def h as bytes init buildHeader(PTYPE_ACK, $src, $dst, 0x0102, 0x100000005);
+    testing.assertEqual(hex($h[14..16]), "0102");
+    testing.assertEqual(hex($h[18..22]), "00000005");
+    def top as bytes init buildHeader(PTYPE_ACK, $src, $dst, 0xffff, 0xffffffff);
+    testing.assertEqual(hex($top[14..16]), "ffff");
+    testing.assertEqual(hex($top[18..22]), "ffffffff");
 }
 
 func testParseMac() {
@@ -66,9 +79,9 @@ func testParseHeaderServerLayout() {
         $sp,
         parseMac("010203040506"),
         parseMac("0a0b0c0d0e0f"),
-        u16be(0x0015),
-        u16be(0xbeef),
-        u32be(0x00000064)
+        be16(0x0015),
+        be16(0xbeef),
+        be32(0x00000064)
     ]);
     def hd as Header init parseHeader($sp);
     testing.assertEqual($hd.ptype, PTYPE_ACK);
@@ -178,9 +191,9 @@ func srvHeader(ptype as int, seskey as int, counter as int) {
         $lead,
         parseMac(ROUTER_MAC),
         binary.make(6),
-        u16be(0x0015),
-        u16be($seskey),
-        u32be($counter)
+        be16(0x0015),
+        be16($seskey),
+        be32($counter)
     ]);
 }
 
@@ -201,7 +214,7 @@ func readLogin(payload as bytes) {
     };
     def off as int init 0;
     while ($off + 9 <= len($payload) and matchMagic($payload, $off)) {
-        def clen as int init readU32be($payload, $off + 5);
+        def clen as int init binary.readUint("be", $payload, $off + 5, 4);
         def data as bytes init $payload[$off + 9..$off + 9 + $clen];
         if ($payload[$off + 4] == CPTYPE_BEGINAUTH) {
             $l.beginAuth = true;
@@ -247,7 +260,7 @@ func fakeRouter(sock as net.UDPSocket, password as string, salt as bytes, idleMs
             throw $e;
         }
         def pkt as bytes init $dg.data;
-        def seskey as int init readU16be($pkt, 14);
+        def seskey as int init binary.readUint("be", $pkt, 14, 2);
         def ptype as int init $pkt[1];
         if ($ptype == PTYPE_SESSIONSTART) {
             net.sendTo($sock, $dg.peer, srvHeader(PTYPE_ACK, $seskey, 0));
@@ -258,7 +271,7 @@ func fakeRouter(sock as net.UDPSocket, password as string, salt as bytes, idleMs
             net.sendTo(
                 $sock,
                 $dg.peer,
-                srvHeader(PTYPE_ACK, $seskey, readU32be($pkt, 18) + len($payload)));
+                srvHeader(PTYPE_ACK, $seskey, binary.readUint("be", $pkt, 18, 4) + len($payload)));
             def l as Login init readLogin($payload);
             if ($l.hasPassword) {
                 $lines[] = "<proof>";

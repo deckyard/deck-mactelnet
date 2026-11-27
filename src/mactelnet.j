@@ -161,37 +161,6 @@ func utf8(s as string) {
     return encoding.encode("utf-8", $s);
 }
 
-func u16be(n as int) {
-    def b as bytes;
-    $b[] = ($n >> 8) & 0xff;
-    $b[] = $n & 0xff;
-    return $b;
-}
-
-func u16le(n as int) {
-    def b as bytes;
-    $b[] = $n & 0xff;
-    $b[] = ($n >> 8) & 0xff;
-    return $b;
-}
-
-func u32be(n as int) {
-    def b as bytes;
-    $b[] = ($n >> 24) & 0xff;
-    $b[] = ($n >> 16) & 0xff;
-    $b[] = ($n >> 8) & 0xff;
-    $b[] = $n & 0xff;
-    return $b;
-}
-
-func readU16be(buf as bytes, off as int) {
-    return binary.readUint("be", $buf, $off, 2);
-}
-
-func readU32be(buf as bytes, off as int) {
-    return binary.readUint("be", $buf, $off, 4);
-}
-
 # --- MAC address (private, plus exported convenience) -----------------------
 
 /**
@@ -252,7 +221,16 @@ func buildHeader(ptype as int, src as bytes, dst as bytes, seskey as int, counte
     def ct as bytes;
     $ct[] = 0x00;
     $ct[] = 0x15;
-    return binary.join([$lead, $src, $dst, u16be($seskey), $ct, u32be($counter)]);
+    # The counter is a 32-bit sequence number that wraps; the session's running
+    # totals grow past it.
+    return binary.join([
+        $lead,
+        $src,
+        $dst,
+        binary.fromUint("be", $seskey, 2),
+        $ct,
+        binary.fromUint("be", $counter & 0xffffffff, 4)
+    ]);
 }
 
 # parseHeader reads a server->client packet header. Server layout puts the
@@ -261,8 +239,8 @@ func parseHeader(pkt as bytes) {
     return Header{
         ptype: $pkt[1],
         src: $pkt[2..8],
-        seskey: readU16be($pkt, 16),
-        counter: readU32be($pkt, 18)
+        seskey: binary.readUint("be", $pkt, 16, 2),
+        counter: binary.readUint("be", $pkt, 18, 4)
     };
 }
 
@@ -282,7 +260,7 @@ func controlBlock(cptype as int, data as bytes) {
     $b[] = 0x12;
     $b[] = 0xff;
     $b[] = $cptype;
-    return binary.join([$b, u32be(len($data)), $data]);
+    return binary.join([$b, binary.fromUint("be", len($data), 4), $data]);
 }
 
 func matchMagic(buf as bytes, off as int) {
@@ -430,7 +408,7 @@ func processData(s as Session, pkt as bytes) {
     while ($off < len($payload)) {
         if ($off + 9 <= len($payload) and matchMagic($payload, $off)) {
             def cptype as int init $payload[$off + 4];
-            def clen as int init readU32be($payload, $off + 5);
+            def clen as int init binary.readUint("be", $payload, $off + 5, 4);
             def dstart as int init $off + 9;
             if ($dstart + $clen > len($payload)) {
                 $clen = len($payload) - $dstart;
@@ -727,8 +705,8 @@ func openSession(opts as Options, target as string) {
         $pwctl,
         controlBlock(CPTYPE_USERNAME, utf8($opts.user)),
         controlBlock(CPTYPE_TERM_TYPE, utf8("vt100")),
-        controlBlock(CPTYPE_TERM_WIDTH, u16le(80)),
-        controlBlock(CPTYPE_TERM_HEIGHT, u16le(24))
+        controlBlock(CPTYPE_TERM_WIDTH, binary.fromUint("le", 80, 2)),
+        controlBlock(CPTYPE_TERM_HEIGHT, binary.fromUint("le", 24, 2))
     ]);
     def frames2 as list of Frame init sendData($s, $auth2);
 

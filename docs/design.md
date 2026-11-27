@@ -113,4 +113,6 @@ one, so CI parses it only.
 - `crypto.mtweiKeygen` / `mtweiId` / `mtweiClientKey` (EC-SRP) and
   `net.bindToDevice`, which stay in the interpreter after the bundled module is
   removed, plus `net`'s broadcast UDP and `kv`.
+- `binary.fromUint` / `binary.readUint` for the header and control-block
+  fields (M29.54, 0.28.0).
 - The `net` capability and Linux™, so the default `jennifer` binary only.
